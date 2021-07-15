@@ -13,7 +13,7 @@
  location = {Troy, USA},
  publisher = {ACM},
  address = {New York, NY, USA},
- keywords = {Facebook, Advertising, Epidemihology, Social Media, Health},
+ keywords = {Facebook, Advertising, Epidemiology, Social Media, Health},
 } 
 ```
 
@@ -27,7 +27,7 @@
 
 **License:** MIT
 
-**Python Version:** 2.7
+**Python Version:** 3.7
 
 
 ### What is this for
