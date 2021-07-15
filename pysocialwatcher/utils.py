@@ -2,7 +2,7 @@
 import json
 from tabulate import tabulate
 import pandas as pd
-import constants
+import pysocialwatcher.constants as constants
 import itertools
 import logging
 import coloredlogs
@@ -231,7 +231,7 @@ def load_json_data_from_response(response):
 
 
 def print_dataframe(df):
-    print tabulate(df, headers='keys', tablefmt='psql', floatfmt=".0f")
+    print (tabulate(df, headers='keys', tablefmt='psql', floatfmt=".0f"))
 
 
 def build_initial_collection_dataframe():

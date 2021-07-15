@@ -1,7 +1,7 @@
-import main
+from .main import PySocialWatcher
 import logging
 
-watcherAPI = main.PySocialWatcher
+watcherAPI = PySocialWatcher
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     watcherAPI.load_credentials_file("credentials.csv")

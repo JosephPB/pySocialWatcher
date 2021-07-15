@@ -2,7 +2,8 @@
 import sys
 
 
-from utils import *
+from pysocialwatcher.utils import *
+import pysocialwatcher.constants as constants
 
 
 class PySocialWatcher:
@@ -224,4 +225,4 @@ class PySocialWatcher:
 
     @staticmethod
     def print_bad_joke():
-        print "I used to think the brain was the most important organ.\nThen I thought, look what’s telling me that."
+        print ("I used to think the brain was the most important organ.\nThen I thought, look what’s telling me that.")
