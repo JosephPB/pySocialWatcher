@@ -2,7 +2,7 @@
 import json
 from tabulate import tabulate
 import pandas as pd
-import pysocialwatcher.constants as constants
+from . import constants
 import itertools
 import logging
 import coloredlogs
@@ -11,8 +11,10 @@ from multiprocessing import Process, Manager
 import numpy
 import requests
 import ast
+import os
 
 coloredlogs.install(level=logging.INFO)
+
 
 class RequestException(Exception):
     def __init__(self, value):
@@ -29,6 +31,7 @@ class JsonFormatException(Exception):
     def __str__(self):
         return repr(self.value)
 
+
 class FatalException(Exception):
     def __init__(self, value):
         self.value = value
@@ -36,17 +39,16 @@ class FatalException(Exception):
     def __str__(self):
         return repr(self.value)
 
+
 def print_error_warning(error_json, params):
     print_warning("Facebook Error Code: " + str(error_json["error"]["code"]))
     print_warning("Facebook Error Message: " + str(error_json["error"]["message"]))
-    if (
-            "error_user_title" in error_json["error"].keys()
-            and "error_user_msg" in error_json["error"].keys()
-    ):
+    if "error_user_title" in error_json["error"] and "error_user_msg" in error_json["error"]:
         print_warning("Facebook: " + str(error_json["error"]["error_user_title"]) + "\n" + str(
             error_json["error"]["error_user_msg"]))
     print_warning("Facebook Trace Id: " + str(error_json["error"]["fbtrace_id"]))
     print_warning("Request Params : " + str(params))
+
 
 def get_dataframe_from_json_response_query_data(json_response):
     dataframe = pd.DataFrame()
@@ -57,16 +59,20 @@ def get_dataframe_from_json_response_query_data(json_response):
         dataframe = dataframe.append(entry_details, ignore_index=True)
     return dataframe
 
+
 def handle_send_request_error(response, url, params, tryNumber):
     try:
         error_json = json.loads(response.text)
-        if error_json["error"]["code"] == constants.API_UNKOWN_ERROR_CODE_1 or error_json["error"]["code"] == constants.API_UNKOWN_ERROR_CODE_2:
+        if error_json["error"]["code"] == constants.API_UNKOWN_ERROR_CODE_1 or error_json["error"][
+            "code"] == constants.API_UNKOWN_ERROR_CODE_2:
             print_error_warning(error_json, params)
             time.sleep(constants.INITIAL_TRY_SLEEP_TIME * tryNumber)
             return send_request(url, params, tryNumber)
-        elif error_json["error"]["code"] == constants.INVALID_PARAMETER_ERROR and "error_subcode" in error_json["error"] and error_json["error"]["error_subcode"] == constants.FEW_USERS_IN_CUSTOM_LOCATIONS_SUBCODE_ERROR:
+        elif error_json["error"]["code"] == constants.INVALID_PARAMETER_ERROR and "error_subcode" in error_json[
+            "error"] and error_json["error"]["error_subcode"] == constants.FEW_USERS_IN_CUSTOM_LOCATIONS_SUBCODE_ERROR:
             return get_fake_response()
-        elif "message" in error_json["error"] and "Invalid zip code" in error_json["error"]["message"] and constants.INGORE_INVALID_ZIP_CODES:
+        elif "message" in error_json["error"] and "Invalid zip code" in error_json["error"][
+            "message"] and constants.INGORE_INVALID_ZIP_CODES:
             print_warning("Invalid Zip Code:" + str(params[constants.TARGETING_SPEC_FIELD]))
             return get_fake_response()
         else:
@@ -81,10 +87,11 @@ def handle_send_request_error(response, url, params, tryNumber):
         logging.error(e)
         raise FatalException(str(response.text))
 
-def send_request(url, params, tryNumber = 0):
+
+def send_request(url, params, tryNumber=0):
     tryNumber += 1
     if tryNumber >= constants.MAX_NUMBER_TRY:
-        print_warning("Maxium Number of Tries reached. Failing.")
+        print_warning("Maximum Number of Tries reached. Failing.")
         raise FatalException("Maximum try reached.")
     try:
         response = requests.get(url, params=params, timeout=constants.REQUESTS_TIMEOUT)
@@ -99,17 +106,17 @@ def send_request(url, params, tryNumber = 0):
 def call_request_fb(row, token, account):
     target_request = row[constants.TARGETING_FIELD]
     payload = {
-        'currency': 'USD',
         'optimize_for': "NONE",
         'optimization_goal': "AD_RECALL_LIFT",
         'targeting_spec': json.dumps(target_request),
         'access_token': token,
     }
-#    payload_str = str(payload)
-#    print_warning("\tSending in request: %s"%(payload_str))
+    payload_str = str(payload)
+    print_warning("\tSending in request: %s" % (payload_str))
     url = constants.REACHESTIMATE_URL.format(account)
     response = send_request(url, payload)
     return response.content
+
 
 def get_fake_response():
     response = requests.models.Response()
@@ -128,12 +135,17 @@ def trigger_facebook_call(index, row, token, account, shared_queue):
         print_warning("Row: " + str(row))
         print_warning("It will try again later")
         shared_queue.put((index, numpy.nan))
+
+
 #    except Exception, e:
 #        print_warning("request failed because %s"%(e))
 
+
 def add_mocked_column(dataframe):
-    dataframe["mock_response"] = dataframe["response"].apply(lambda response: True if (constants.MOCK_RESPONSE_FIELD in response) else False)
+    dataframe["mock_response"] = dataframe["response"].apply(
+        lambda response: True if (constants.MOCK_RESPONSE_FIELD in str(response)) else False)
     return dataframe
+
 
 def add_timestamp(dataframe):
     dataframe["timestamp"] = constants.UNIQUE_TIME_ID
@@ -152,20 +164,13 @@ def trigger_request_process_and_return_response(rows_to_request):
     process_manager = Manager()
     shared_queue = process_manager.Queue()
     shared_queue_list = []
-    list_process = []
 
     # Trigger Process in rows
     for index, row in rows_to_request.iterrows():
         token, account = get_token_and_account_number_or_wait()
         p = Process(target=trigger_facebook_call, args=(index, row, token, account, shared_queue))
-        list_process.append(p)
-
-    # Starting process
-    map(lambda p: p.start(), list_process)
-    # Stop process
-    map(lambda p: p.join(), list_process)
-    #Check for Exception
-    map(lambda p: check_exception(p), list_process)
+        p.start()
+        p.join()
 
     # Put things from shared list to normal list
     while shared_queue.qsize() != 0:
@@ -204,24 +209,31 @@ def save_response_in_dataframe(shared_queue_list, df):
         df.loc[result_index, "response"] = result_response
 
 
-def save_skeleton_dataframe(dataframe, output_dir = ""):
+def save_skeleton_dataframe(dataframe, output_dir=""):
     print_info("Saving Skeleton file: " + constants.DATAFRAME_SKELETON_FILE_NAME)
     dataframe.to_csv(output_dir + constants.DATAFRAME_SKELETON_FILE_NAME)
 
-def save_temporary_dataframe(dataframe, output_dir = ""):
+
+def save_temporary_dataframe(dataframe, output_dir=""):
     print_info("Saving temporary file: " + constants.DATAFRAME_TEMPORARY_COLLECTION_FILE_NAME)
     dataframe.to_csv(output_dir + constants.DATAFRAME_TEMPORARY_COLLECTION_FILE_NAME)
 
 
-def save_after_collecting_dataframe(dataframe, output_dir = ""):
+def save_after_collecting_dataframe(dataframe, output_dir=""):
     print_info("Saving after collecting file: " + constants.DATAFRAME_AFTER_COLLECTION_FILE_NAME)
     dataframe.to_csv(output_dir + constants.DATAFRAME_AFTER_COLLECTION_FILE_NAME)
 
-def save_after_collecting_dataframe_without_full_response(dataframe, output_dir = ""):
+
+def save_after_collecting_dataframe_without_full_response(dataframe, output_dir=""):
     dataframe = dataframe.drop('response', 1)
     print_dataframe(dataframe)
     print_info("Saving after collecting file: " + constants.DATAFRAME_AFTER_COLLECTION_FILE_NAME_WITHOUT_FULL_RESPONSE)
     dataframe.to_csv(output_dir + constants.DATAFRAME_AFTER_COLLECTION_FILE_NAME_WITHOUT_FULL_RESPONSE)
+
+
+def remove_temporary_dataframes():
+    for file in [constants.DATAFRAME_SKELETON_FILE_NAME, constants.DATAFRAME_TEMPORARY_COLLECTION_FILE_NAME]:
+        os.remove(file)
 
 
 def print_warning(message):
@@ -229,16 +241,15 @@ def print_warning(message):
 
 
 def load_json_data_from_response(response):
-    response_content = response.content.encode('utf-8')
-    return json.loads(response_content)
+    return json.loads(response.content)
 
 
 def print_dataframe(df):
-    print (tabulate(df, headers='keys', tablefmt='psql', floatfmt=".0f"))
+    print(tabulate(df, headers='keys', tablefmt='psql', floatfmt=".0f"))
 
 
 def build_initial_collection_dataframe():
-    return pd.DataFrame(columns= constants.DATAFRAME_COLUMNS)
+    return pd.DataFrame(columns=constants.DATAFRAME_COLUMNS)
 
 
 def get_all_combinations_from_input(input_data_json):
@@ -249,30 +260,20 @@ def get_all_combinations_from_input(input_data_json):
                 field_content = input_data_json[field]
                 to_combine_fields[field] = field_content
             if isinstance(input_data_json[field], dict):
-                for intra_field_key in input_data_json[field].keys():
+                for intra_field_key in list(input_data_json[field].keys()):
                     to_combine_fields[intra_field_key] = input_data_json[field][intra_field_key]
 
-                # to_combine_fields[field] = build_AND_intra_field_combinations(input_data_json[field])
         except KeyError:
             print_warning("Field not expecified: " + field)
 
-    for field in to_combine_fields.keys():
+    for field in list(to_combine_fields.keys()):
         for index, value in enumerate(to_combine_fields[field]):
             to_combine_fields[field][index] = (field, value)
-    all_combinations = list(itertools.product(*to_combine_fields.values()))
+    all_combinations = list(itertools.product(*list(to_combine_fields.values())))
     return all_combinations
 
-def build_AND_intra_field_combinations(intra_field_data):
-    intra_fields = []
-    for field in intra_field_data.values():
-        intra_fields.append(field)
-    teste = list(itertools.product(*intra_fields))
-    import ipdb;ipdb.set_trace()
-    pass
 
-
-
-def add_list_of_ANDS_to_input(list_of_ANDS_between_groups,input_data_json):
+def add_list_of_ANDS_to_input(list_of_ANDS_between_groups, input_data_json):
     for interests_to_AND in list_of_ANDS_between_groups:
         names = []
         and_ors = []
@@ -282,15 +283,15 @@ def add_list_of_ANDS_to_input(list_of_ANDS_between_groups,input_data_json):
                 raise Exception("Only AND of ors are supported")
             and_ors.append(interest_to_AND["or"])
         new_and_interest = {
-            constants.INPUT_NAME_FIELD : " AND ".join(names),
-            "and_ors" : and_ors,
-            "isAND" : True
+            constants.INPUT_NAME_FIELD: " AND ".join(names),
+            "and_ors": and_ors,
+            "isAND": True
         }
         input_data_json[constants.INPUT_INTEREST_FIELD].append(new_and_interest)
 
 
 def generate_collection_request_from_combination(current_combination, input_data):
-    targeting = build_targeting(current_combination,input_data)
+    targeting = build_targeting(current_combination, input_data)
     dataframe_row = {}
     for field in current_combination:
         field_name = field[0]
@@ -305,7 +306,7 @@ def generate_collection_request_from_combination(current_combination, input_data
 def select_common_fields_in_targeting(targeting, input_combination_dictionary):
     # Selecting Geolocation
     geo_location = input_combination_dictionary[constants.INPUT_GEOLOCATION_FIELD]
-    if constants.INPUT_GEOLOCATION_LOCATION_TYPE_FIELD in geo_location.keys():
+    if constants.INPUT_GEOLOCATION_LOCATION_TYPE_FIELD in geo_location:
         location_type = geo_location[constants.INPUT_GEOLOCATION_LOCATION_TYPE_FIELD]
     else:
         location_type = constants.DEFAULT_GEOLOCATION_LOCATION_TYPE_FIELD
@@ -316,15 +317,15 @@ def select_common_fields_in_targeting(targeting, input_combination_dictionary):
     }
     # Selecting Age
     age_range = input_combination_dictionary[constants.INPUT_AGE_RANGE_FIELD]
-    targeting[constants.API_MIN_AGE_FIELD] = age_range[constants.MIN_AGE] if constants.MIN_AGE in age_range.keys() else None
-    targeting[constants.API_MAX_AGE_FIELD] = age_range[constants.MAX_AGE] if constants.MAX_AGE in age_range.keys() else None
+    targeting[constants.API_MIN_AGE_FIELD] = age_range[constants.MIN_AGE] if constants.MIN_AGE in age_range else None
+    targeting[constants.API_MAX_AGE_FIELD] = age_range[constants.MAX_AGE] if constants.MAX_AGE in age_range else None
 
     # Selecting genders
     gender = input_combination_dictionary[constants.INPUT_GENDER_FIELD]
     targeting[constants.API_GENDER_FIELD] = [gender]
 
     # Selecting Languages
-    if constants.INPUT_LANGUAGE_FIELD in input_combination_dictionary.keys():
+    if constants.INPUT_LANGUAGE_FIELD in input_combination_dictionary:
         languages = input_combination_dictionary[constants.INPUT_LANGUAGE_FIELD]
         if languages:
             targeting[constants.API_LANGUAGES_FIELD] = languages["values"]
@@ -338,12 +339,13 @@ def get_api_field_name(field_name):
 
 def process_dau_audience_from_response(literal_response):
     aud = json.loads(literal_response)["data"][0]
-    audience=aud["estimate_dau"]
+    audience = aud["estimate_dau"]
     return int(audience)
+
 
 def process_mau_audience_from_response(literal_response):
     aud = json.loads(literal_response)["data"][0]
-    audience=aud["estimate_mau"]
+    audience = aud["estimate_mau"]
     return int(audience)
 
 
@@ -363,38 +365,38 @@ def post_process_collection(collection_dataframe):
 def select_advance_targeting_type_array_ids(segment_type, input_value, targeting):
     api_field_name = get_api_field_name(segment_type)
     if input_value:
-        if "or" in input_value.keys():
+        if "or" in input_value:
             or_query = []
             for or_id in input_value["or"]:
-                or_query.append({"id" : or_id})
+                or_query.append({"id": or_id})
             targeting["flexible_spec"].append({api_field_name: or_query})
 
-        if "and" in input_value.keys():
+        if "and" in input_value:
             for id_and in input_value["and"]:
                 ## TODO: make the behavior AND query request less hacky
-                if(segment_type == constants.INPUT_BEHAVIOR_FIELD):
-                    if(len(targeting['flexible_spec']) == 1):
-                        targeting['flexible_spec'].append({api_field_name : []})
-                    targeting['flexible_spec'][1][api_field_name].append({"id" : id_and})
+                if segment_type == constants.INPUT_BEHAVIOR_FIELD:
+                    if len(targeting['flexible_spec']) == 1:
+                        targeting['flexible_spec'].append({api_field_name: []})
+                    targeting['flexible_spec'][1][api_field_name].append({"id": id_and})
                 else:
-                    targeting["flexible_spec"].append({segment_type: {"id" : id_and}})
+                    targeting["flexible_spec"].append({segment_type: {"id": id_and}})
 
-        if "not" in input_value.keys():
+        if "not" in input_value:
             if not "exclusions" in targeting:
                 targeting["exclusions"] = {}
-            if not api_field_name in targeting["exclusions"].keys():
+            if not api_field_name in list(targeting["exclusions"].keys()):
                 targeting["exclusions"][api_field_name] = []
             for id_not in input_value["not"]:
-                targeting["exclusions"][api_field_name].append({"id" : id_not})
+                targeting["exclusions"][api_field_name].append({"id": id_not})
 
-        if "and_ors" in input_value.keys():
+        if "and_ors" in input_value:
             for or_ids in input_value["and_ors"]:
                 or_query = []
                 for or_id in or_ids:
-                    or_query.append({"id" : or_id})
+                    or_query.append({"id": or_id})
                 targeting["flexible_spec"].append({segment_type: or_query})
 
-        if not "or" in input_value.keys() and not "and" in input_value.keys() and not "not" in input_value.keys() and not "and_ors" in input_value.keys():
+        if "or" not in input_value and "and" not in input_value and "not" not in input_value and "and_ors" not in input_value:
             raise JsonFormatException("Something wrong with: " + str(input_value))
 
 
@@ -410,6 +412,7 @@ def get_interests_by_group_to_AND(input_data_json, groups_ids):
                     interests_by_group_to_AND[interest_group_id].append(interest_input)
     return interests_by_group_to_AND
 
+
 def select_advance_targeting_type_array_integer(segment_type, input_value, targeting):
     api_field_name = get_api_field_name(segment_type)
     if input_value:
@@ -418,7 +421,7 @@ def select_advance_targeting_type_array_integer(segment_type, input_value, targe
         elif "not" in input_value:
             if not "exclusions" in targeting:
                 targeting["exclusions"] = {}
-            if not api_field_name in targeting["exclusions"].keys():
+            if not api_field_name in list(targeting["exclusions"].keys()):
                 targeting["exclusions"][api_field_name] = []
             for value in input_value["not"]:
                 targeting["exclusions"][api_field_name].append(value)
@@ -431,11 +434,13 @@ def select_advance_targeting_fields(targeting, input_combination_dictionary):
     targeting["flexible_spec"] = []
 
     for advance_field in constants.ADVANCE_TARGETING_FIELDS_TYPE_ARRAY_IDS:
-        if advance_field in input_combination_dictionary.keys():
-            select_advance_targeting_type_array_ids(advance_field, input_combination_dictionary[advance_field], targeting)
+        if advance_field in input_combination_dictionary:
+            select_advance_targeting_type_array_ids(advance_field, input_combination_dictionary[advance_field],
+                                                    targeting)
     for advance_field in constants.ADVANCE_TARGETING_FIELDS_TYPE_ARRAY_INTEGER:
-        if advance_field in input_combination_dictionary.keys():
-            select_advance_targeting_type_array_integer(advance_field, input_combination_dictionary[advance_field], targeting)
+        if advance_field in input_combination_dictionary:
+            select_advance_targeting_type_array_integer(advance_field, input_combination_dictionary[advance_field],
+                                                        targeting)
     return targeting
 
 
@@ -445,6 +450,7 @@ def select_publisher_platform(targeting, input_data):
     if constants.API_PUBLISHER_PLATFORMS_FIELD in input_data:
         platform = input_data[constants.API_PUBLISHER_PLATFORMS_FIELD]
     targeting[constants.API_PUBLISHER_PLATFORMS_FIELD] = platform
+
 
 def build_targeting(current_combination, input_data):
     targeting = {}
@@ -461,7 +467,7 @@ def get_token_and_account_number_or_wait():
         used_tokens_time_map = {}
     while True:
         for token, account in constants.TOKENS:
-            if token in used_tokens_time_map.keys():
+            if token in used_tokens_time_map:
                 last_used_time = used_tokens_time_map[token]
                 time_since_used = time.time() - last_used_time
                 if time_since_used > constants.SLEEP_TIME:
@@ -476,8 +482,11 @@ def get_token_and_account_number_or_wait():
 def print_collecting_progress(uncomplete_df, df):
     full_size = len(df)
     uncomplete_df_size = len(uncomplete_df)
-    print_info("Collecting... Completed: {:.2f}% , {:d}/{:d}".format((float(full_size - uncomplete_df_size) / full_size * 100),
-                                                                     full_size - uncomplete_df_size, full_size))
+    print_info(
+        "Collecting... Completed: {:.2f}% , {:d}/{:d}".format((float(full_size - uncomplete_df_size) / full_size * 100),
+                                                              full_size - uncomplete_df_size, full_size))
+
+
 def send_dumb_query(token, account):
     try:
         row = pd.Series()
@@ -487,14 +496,262 @@ def send_dumb_query(token, account):
         print_warning("Token or Account Number Error:")
         print_warning("Token:" + token)
         print_warning("Account:" + account)
-        raise  error
+        raise error
+
 
 def from_FB_polygons_to_KML(poly):
     out = ""
     for p in poly:
         out += "<Polygon><outerBoundaryIs><LinearRing><coordinates>"
         for pair in p:
-            out += " %s,%s" % (pair["lng"],pair["lat"])
+            out += " %s,%s" % (pair["lng"], pair["lat"])
         out += "</coordinates></LinearRing></outerBoundaryIs></Polygon>"
     return out
 
+
+def double_country_conversion(input):
+    mapping = {
+        "AD": "Andorra",
+        "AE": "United Arab Emirates",
+        "AF": "Afghanistan",
+        "AG": "Antigua and Barbuda",
+        "AL": "Albania",
+        "AM": "Armenia",
+        "AO": "Angola",
+        "AR": "Argentina",
+        "AS": "American Samoa",
+        "AT": "Austria",
+        "AU": "Australia",
+        "AW": "Aruba",
+        "AZ": "Azerbaijan",
+        "BA": "Bosnia and Herzegovina",
+        "BB": "Barbados",
+        "BD": "Bangladesh",
+        "BE": "Belgium",
+        "BF": "Burkina Faso",
+        "BG": "Bulgaria",
+        "BH": "Bahrain",
+        "BI": "Burundi",
+        "BJ": "Benin",
+        "BM": "Bermuda",
+        "BN": "Brunei",
+        "BO": "Bolivia",
+        "BR": "Brazil",
+        "BS": "Bahamas",
+        "BT": "Bhutan",
+        "BW": "Botswana",
+        "BY": "Belarus",
+        "BZ": "Belize",
+        "CA": "Canada",
+        "CD": "Congo Dem. Rep.",
+        "CF": "Central African Republic",
+        "CG": "Congo Rep.",
+        "CH": "Switzerland",
+        "CI": "Cote d'Ivoire",
+        "CK": "Cook Islands",
+        "CL": "Chile",
+        "CM": "Cameroon",
+        "CN": "China",
+        "CO": "Colombia",
+        "CR": "Costa Rica",
+        "CV": "Cape Verde",
+        "CW": "Curacao",
+        "CY": "Cyprus",
+        "CZ": "Czech Republic",
+        "DE": "Germany",
+        "DJ": "Djibouti",
+        "DK": "Denmark",
+        "DM": "Dominica",
+        "DO": "Dominican Republic",
+        "DZ": "Algeria",
+        "EC": "Ecuador",
+        "EE": "Estonia",
+        "EG": "Egypt",
+        "EH": "Western Sahara",
+        "ER": "Eritrea",
+        "ES": "Spain",
+        "ET": "Ethiopia",
+        "FI": "Finland",
+        "FJ": "Fiji",
+        "FK": "Falkland Islands",
+        "FM": "Micronesia",
+        "FO": "Faroe Islands",
+        "FR": "France",
+        "GA": "Gabon",
+        "GB": "United Kingdom",
+        "GD": "Grenada",
+        "GE": "Georgia",
+        "GF": "French Guiana",
+        "GG": "Guernsey",
+        "GH": "Ghana",
+        "GI": "Gibraltar",
+        "GL": "Greenland",
+        "GM": "Gambia",
+        "GN": "Guinea-Bissau",
+        "GP": "Guadeloupe",
+        "GQ": "Equatorial Guinea",
+        "GR": "Greece",
+        "GT": "Guatemala",
+        "GU": "Guam",
+        "GW": "Guinea",
+        "GY": "Guyana",
+        "HK": "Hong Kong",
+        "HN": "Honduras",
+        "HR": "Croatia",
+        "HT": "Haiti",
+        "HU": "Hungary",
+        "ID": "Indonesia",
+        "IE": "Ireland",
+        "IL": "Israel",
+        "IM": "Isle of Man",
+        "IN": "India",
+        "IQ": "Iraq",
+        "IR": "Iran",
+        "IS": "Iceland",
+        "IT": "Italy",
+        "JE": "Jersey",
+        "JM": "Jamaica",
+        "JO": "Jordan",
+        "JP": "Japan",
+        "KE": "Kenya",
+        "KG": "Kyrgyzstan",
+        "KH": "Cambodia",
+        "KI": "Kiribati",
+        "KM": "Comoros",
+        "KN": "Saint Kitts and Nevis",
+        "KR": "South Korea",
+        "KW": "Kuwait",
+        "KY": "Cayman Islands",
+        "KZ": "Kazakhstan",
+        "LA": "Laos",
+        "LB": "Lebanon",
+        "LC": "Saint Lucia",
+        "LI": "Liechtenstein",
+        "LK": "Sri Lanka",
+        "LR": "Liberia",
+        "LS": "Lesotho",
+        "LT": "Lithuania",
+        "LU": "Luxembourg",
+        "LV": "Latvia",
+        "LY": "Libya",
+        "MA": "Morocco",
+        "MC": "Monaco",
+        "MD": "Moldova",
+        "ME": "Montenegro",
+        "MF": "Saint Martin",
+        "MG": "Madagascar",
+        "MH": "Marshall Islands",
+        "MK": "Macedonia",
+        "ML": "Mali",
+        "MM": "Myanmar",
+        "MN": "Mongolia",
+        "MO": "Macau",
+        "MP": "Northern Mariana Islands",
+        "MQ": "Martinique",
+        "MR": "Mauritania",
+        "MS": "Montserrat",
+        "MT": "Malta",
+        "MU": "Mauritius",
+        "MV": "Maldives",
+        "MW": "Malawi",
+        "MX": "Mexico",
+        "MY": "Malaysia",
+        "MZ": "Mozambique",
+        "NA": "Namibia",
+        "NC": "New Caledonia",
+        "NE": "Niger",
+        "NF": "Norfolk Island",
+        "NG": "Nigeria",
+        "NI": "Nicaragua",
+        "NL": "Netherlands",
+        "NO": "Norway",
+        "NP": "Nepal",
+        "NR": "Nauru",
+        "NU": "Niue",
+        "NZ": "New Zealand",
+        "OM": "Oman",
+        "PA": "Panama",
+        "PE": "Peru",
+        "PF": "French Polynesia",
+        "PG": "Papua New Guinea",
+        "PH": "Philippines",
+        "PK": "Pakistan",
+        "PL": "Poland",
+        "PM": "Saint Pierre and Miquelon",
+        "PN": "Pitcairn",
+        "PR": "Puerto Rico",
+        "PS": "Palestine",
+        "PT": "Portugal",
+        "PW": "Palau",
+        "PY": "Paraguay",
+        "QA": "Qatar",
+        "RE": "Reunion",
+        "RO": "Romania",
+        "RS": "Serbia",
+        "RU": "Russia",
+        "RW": "Rwanda",
+        "SA": "Saudi Arabia",
+        "SB": "Solomon Islands",
+        "SC": "Seychelles",
+        "SE": "Sweden",
+        "SG": "Singapore",
+        "SH": "Saint Helena",
+        "SI": "Slovenia",
+        "SJ": "Svalbard and Jan Mayen",
+        "SK": "Slovakia",
+        "SL": "Sierra Leone",
+        "SM": "San Marino",
+        "SN": "Senegal",
+        "SO": "Somalia",
+        "SR": "Suriname",
+        "SS": "South Sudan",
+        "ST": "Sao Tome and Principe",
+        "SV": "El Salvador",
+        "SY": "Syria",
+        "SX": "Sint Maarten",
+        "SZ": "Swaziland",
+        "TC": "Turks and Caicos Islands",
+        "TD": "Chad",
+        "TG": "Togo",
+        "TH": "Thailand",
+        "TJ": "Tajikistan",
+        "TK": "Tokelau",
+        "TL": "Timor-Leste",
+        "TM": "Turkmenistan",
+        "TN": "Tunisia",
+        "TO": "Tonga",
+        "TR": "Turkey",
+        "TT": "Trinidad and Tobago",
+        "TV": "Tuvalu",
+        "TW": "Taiwan",
+        "TZ": "Tanzania",
+        "UA": "Ukraine",
+        "UG": "Uganda",
+        "US": "United States",
+        "UY": "Uruguay",
+        "UZ": "Uzbekistan",
+        "VC": "Saint Vincent and the Grenadines",
+        "VE": "Venezuela",
+        "VG": "British Virgin Islands",
+        "VI": "US Virgin Islands",
+        "VN": "Vietnam",
+        "VU": "Vanuatu",
+        "WF": "Wallis and Futuna",
+        "WS": "Samoa",
+        "XK": "Kosovo",
+        "YE": "Yemen",
+        "YT": "Mayotte",
+        "ZA": "South Africa",
+        "ZM": "Zambia",
+        "ZW": "Zimbabwe",
+    }
+
+    if input in mapping:
+        return mapping[input]
+
+    inverted = dict(zip(mapping.values(), mapping.keys()))
+
+    if input in inverted:
+        return inverted[input]
+
+    return None

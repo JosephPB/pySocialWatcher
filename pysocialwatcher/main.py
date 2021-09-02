@@ -1,12 +1,35 @@
 # -*- coding: utf-8 -*-
-import sys
+from .utils import *
+import string
+import xml.etree.ElementTree as ET
 
-
-from pysocialwatcher.utils import *
-import pysocialwatcher.constants as constants
-
+# TODOs:
+# Check pySocialWatcher for reindex that is creating a "Unnamed: 0"
 
 class PySocialWatcher:
+
+    def __init__(self, api_version="11.0", sleep_time=8, save_every_x=300, outputname=None):
+
+        constants.REACHESTIMATE_URL = "https://graph.facebook.com/v" + api_version + "/act_{}/delivery_estimate"
+        constants.GRAPH_SEARCH_URL = "https://graph.facebook.com/v" + api_version + "/search"
+        constants.TARGETING_SEARCH_URL = "https://graph.facebook.com/v" + api_version + "/act_{}/targetingsearch"
+        constants.SLEEP_TIME = sleep_time
+        constants.SAVE_EVERY = save_every_x
+
+        constants.UNIQUE_TIME_ID = str(time.time()).split(".")[0]
+
+        constants.DATAFRAME_SKELETON_FILE_NAME = "dataframe_skeleton_" + constants.UNIQUE_TIME_ID + ".csv.gz"
+        constants.DATAFRAME_TEMPORARY_COLLECTION_FILE_NAME = "dataframe_collecting_" + constants.UNIQUE_TIME_ID + ".csv.gz"
+        constants.DATAFRAME_AFTER_COLLECTION_FILE_NAME = "dataframe_collected_finished_" + constants.UNIQUE_TIME_ID + ".csv.gz"
+        constants.DATAFRAME_AFTER_COLLECTION_FILE_NAME_WITHOUT_FULL_RESPONSE = "collect_finished_clean" + constants.UNIQUE_TIME_ID + ".csv.gz"
+
+        if outputname:
+            constants.DATAFRAME_AFTER_COLLECTION_FILE_NAME = outputname
+
+    @staticmethod
+    def load_credentials_direct(token, account_number):
+        PySocialWatcher.add_token_and_account_number(token, account_number)
+
     @staticmethod
     def load_credentials_file(token_file_path):
         with open(token_file_path, "r") as token_file:
@@ -77,8 +100,10 @@ class PySocialWatcher:
     @staticmethod
     def get_kml_given_geolocation(location_type, list_location_codes):
         """
+
+        :param
         location_type: countries, regions, cities, zips, places, custom_locations, geo_markets, electoral_districts, country_groups
-        location_code: region code, country two letters accronym, so on.
+        location_code: region code, country two letters acronym, so on.
 
         Example: location_type = "countries", location_code = ["BR","CL","AT","US","QA"]
         """
@@ -92,16 +117,78 @@ class PySocialWatcher:
         json_response = load_json_data_from_response(response)
         df = pd.DataFrame(json_response["data"])
         if df.empty:
-            return
+            return None
 
-        ans = {"name":[], "kml":[]}
+        ans = {"name":[], "kml":[], "key": []}
         for location in df[location_type]:
             ans["name"].append(location["name"])
+            ans["key"].append(location["key"])
             if "polygons" in location:
                 ans["kml"].append(from_FB_polygons_to_KML(location["polygons"]))
             else:
                 ans["kml"].append("Polygons not found.")
         return pd.DataFrame(ans)
+
+    @staticmethod
+    def get_KMLs_for_regions_in_country(country_code):
+        """
+
+        :param country_code: one single country code (e.g., "BR","CL","AT","US","QA")
+
+        :return:
+        """
+        locations = PySocialWatcher.get_geo_locations_given_query_and_location_type(None, ["region"],
+                                                                                    country_code=country_code)
+        print("Obtained %d regions." % (locations.shape[0]))
+        if locations.empty:
+            return None
+
+        kmls = PySocialWatcher.get_KML_given_geolocation("regions", list(locations["key"].values))
+        print("Obtained %d KMLs." % (kmls.shape[0]))
+
+        return pd.merge(locations, kmls, on=["key", "name"])
+
+    @staticmethod
+    def get_all_cities_given_country_code(country_code):
+        # Get all regions
+        regions = PySocialWatcher.get_geo_locations_given_query_and_location_type(None, ["region"],
+                                                                                  country_code=country_code)
+        regions = regions[regions["country_code"] == country_code]
+        dfs = []
+        for idx, row in regions.iterrows():
+            print("Getting cities for region named '%s' (id = %s)" % (row["name"], row["key"]))
+            df = PySocialWatcher.systematically_get_all_cities(country_code=country_code, region_id=row["key"])
+
+            if not df.empty:
+                dfs.append(df)
+
+        concated = None if len(dfs) == 0 else pd.concat(dfs).drop_duplicates(subset="key").reset_index(drop=True)
+
+        return concated
+
+    @staticmethod
+    def systematically_get_all_cities(country_code=None, region_id=None, prefix=""):
+        dfs = []
+
+        for l in string.ascii_lowercase:
+            print("Getting cities that start with %s" % (prefix + l))
+            try:
+                df = PySocialWatcher.get_geo_locations_given_query_and_location_type(prefix + l, ["city"],
+                                                                                country_code=country_code,
+                                                                                region_id=region_id)
+            except FatalException:
+                print("ERROR. Restricting search...")
+                df = PySocialWatcher.systematically_get_all_cities(country_code=country_code,
+                                                                   region_id=region_id,
+                                                                   prefix=prefix + l)
+
+            if df is not None and not df.empty:
+                df = df[df["type"] == "city"]
+                dfs.append(df)
+
+        concated = None if len(dfs) == 0 else pd.concat(dfs).drop_duplicates(subset="key").reset_index(drop=True)
+
+        return concated
 
     @staticmethod
     def print_search_targeting_from_query_dataframe(query):
@@ -124,6 +211,11 @@ class PySocialWatcher:
         print_dataframe(behaviors)
 
     @staticmethod
+    def print_income_list():
+        income = PySocialWatcher.get_income_dataframe()
+        print_dataframe(income)
+
+    @staticmethod
     def read_json_file(file_path):
         file_ptr = open(file_path, "r")
         json_file_raw = file_ptr.read()
@@ -140,20 +232,25 @@ class PySocialWatcher:
         collection_dataframe = build_initial_collection_dataframe()
         collection_queries = []
         input_combinations = get_all_combinations_from_input(input_data_json)
+        #print(input_combinations)        
         print_info("Total API Requests:" + str(len(input_combinations)))
         for index,combination in enumerate(input_combinations):
+            #print(combination)
+            #print(index)            
             print_info("Completed: {0:.2f}".format(100*index/float(len(input_combinations))))
+            #print(generate_collection_request_from_combination(combination, input_data_json))
             collection_queries.append(generate_collection_request_from_combination(combination, input_data_json))
         dataframe = collection_dataframe.append(collection_queries)
         dataframe = add_timestamp(dataframe)
         dataframe = add_published_platforms(dataframe, input_data_json)
+        #print(dataframe)
         if constants.SAVE_EMPTY:
             dataframe.to_csv(output_dir + constants.DATAFRAME_SKELETON_FILE_NAME)
         save_skeleton_dataframe(dataframe, output_dir)
         return dataframe
 
     @staticmethod
-    def perform_collection_data_on_facebook(collection_dataframe, output_dir = ""):
+    def perform_collection_data_on_facebook(collection_dataframe, output_dir = "", remove_tmp_files=False):
         # Call each requests builded
         processed_rows_after_saved = 0
         dataframe_with_uncompleted_requests = collection_dataframe[pd.isnull(collection_dataframe["response"])]
@@ -175,6 +272,10 @@ class PySocialWatcher:
         save_temporary_dataframe(collection_dataframe, output_dir)
         post_process_collection(collection_dataframe)
         save_after_collecting_dataframe(collection_dataframe, output_dir)
+
+        if remove_tmp_files:
+            remove_temporary_dataframes()
+
         return collection_dataframe
 
     @staticmethod
@@ -190,7 +291,8 @@ class PySocialWatcher:
         if not constants.INPUT_NAME_FIELD in input_data_json:
             raise FatalException("Input should have key: " + constants.INPUT_NAME_FIELD)
         # Check if every field in input is supported
-        for field in input_data_json.keys():
+        for field in list(input_data_json.keys()):
+        #for field in input_data_json.keys():            
             if not field in constants.ALLOWED_FIELDS_IN_INPUT:
                 raise FatalException("Field not supported: " + field)
 
@@ -199,16 +301,17 @@ class PySocialWatcher:
         if constants.PERFORM_AND_BETWEEN_GROUPS_INPUT_FIELD in input_data_json:
             for groups_ids in input_data_json[constants.PERFORM_AND_BETWEEN_GROUPS_INPUT_FIELD]:
                 interests_by_group_to_AND = get_interests_by_group_to_AND(input_data_json,groups_ids)
-                list_of_ANDS_between_groups = list(itertools.product(*interests_by_group_to_AND.values()))
+                list_of_ANDS_between_groups = list(itertools.product(*list(interests_by_group_to_AND.values())))
                 add_list_of_ANDS_to_input(list_of_ANDS_between_groups, input_data_json)
 
     @staticmethod
-    def run_data_collection(json_input_file_path, output_dir = ""):
+    def run_data_collection(json_input_file_path, output_dir = "", remove_tmp_files=False):
         input_data_json = PySocialWatcher.read_json_file(json_input_file_path)
         PySocialWatcher.expand_input_if_requested(input_data_json)
         PySocialWatcher.check_input_integrity(input_data_json)
         collection_dataframe = PySocialWatcher.build_collection_dataframe(input_data_json, output_dir)
-        collection_dataframe = PySocialWatcher.perform_collection_data_on_facebook(collection_dataframe, output_dir)
+        #print(collection_dataframe)
+        collection_dataframe = PySocialWatcher.perform_collection_data_on_facebook(collection_dataframe, output_dir, remove_tmp_files)
         return collection_dataframe
 
     @staticmethod
@@ -218,11 +321,49 @@ class PySocialWatcher:
         return collection_dataframe
 
     @staticmethod
-    def config(sleep_time = 8, save_every = 300, save_after_empty_dataframe = False):
-        constants.SLEEP_TIME = sleep_time
-        constants.SAVE_EVERY = save_every
-        constants.SAVE_EMPTY = save_after_empty_dataframe
+    def __df_to_geojson(row):
+        out = {}
+
+        out["type"] = "Feature"
+        if "country" in row:
+            out["country"] = row["country"]
+            out["id"] = row["name"] + ", " + row["country"]
+        else:
+            out["id"] = row["name"]
+
+        out["properties"] = {"name": row["name"]}
+        if "key" in row:
+            out["properties"]["key"] = row["key"]
+        if "country" in row:
+            out["properties"]["country"] = row["country"]
+
+        skml = row["kml"]
+
+        xml_kml = ET.fromstring("<root>" + skml + "</root>")
+        coordinates = xml_kml.findall(".//coordinates")
+
+        list_of_coords = []
+        for c in coordinates:
+            s = c.text
+            coor = []
+            for pair in s.split():
+                a, b = map(float, pair.split(","))
+                coor.append([a, b])
+            list_of_coords.append(coor)
+
+        polygon = {"type": "Polygon", "coordinates": list_of_coords}
+        out["geometry"] = polygon
+        return out
+
+    @staticmethod
+    def transform_KML_into_geojson(df, outputname):
+        df["country"] = df["country_code"].apply(double_country_conversion)
+        features = list(df.apply(lambda x: PySocialWatcher.__df_to_geojson(x), axis=1))
+        output = {"type": "FeatureCollection", "features": features}
+        with open(outputname, "w") as f:
+            json_string = json.dumps(output)
+            f.write(json_string)
 
     @staticmethod
     def print_bad_joke():
-        print ("I used to think the brain was the most important organ.\nThen I thought, look what’s telling me that.")
+        print("I used to think the brain was the most important organ.\nThen I thought, look what’s telling me that.")
